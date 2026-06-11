@@ -10,24 +10,22 @@ import plotly.graph_objects as go
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import auc
 from statsmodels.stats.proportion import proportion_confint
-from functools import reduce
 
 st.set_page_config(page_title="Uplift Dashboard", layout="wide")
 
-DATA_PATH = "/home/tescobarr/Projects/uplift-modeling/data/hillstrom.csv"
-
+DATA_PATH = "data/hillstrom.csv"
 
 # ---------------------------------------------------------------------------
 # Cache: data loading & model training (run once)
 # ---------------------------------------------------------------------------
-@st.cache_data(show_spinner="Cargando datos…")
+@st.cache_data(show_spinner="Cargando datos...")
 def load_data():
     df = pd.read_csv(DATA_PATH)
     df["treatment"] = (df["segment"] != "No E-Mail").astype(int)
     return df
 
 
-@st.cache_data(show_spinner="Entrenando modelo T-Learner…")
+@st.cache_data(show_spinner="Entrenando modelo T-Learner...")
 def train_models(_df):
     """Train T-Learner: two RandomForest models (control, treatment)."""
     cat_cols = ["history_segment", "zip_code", "channel"]
@@ -43,16 +41,15 @@ def train_models(_df):
     feature_cols = [c for c in df.columns if c not in drop_cols]
 
     rf_ctrl = RandomForestClassifier(
-        n_estimators=100, max_depth=10, random_state=42, n_jobs=-1
+        n_estimators=50, max_depth=8, random_state=42, n_jobs=1
     )
     rf_treat = RandomForestClassifier(
-        n_estimators=100, max_depth=10, random_state=42, n_jobs=-1
+        n_estimators=50, max_depth=8, random_state=42, n_jobs=1
     )
 
     rf_ctrl.fit(ctrl[feature_cols], ctrl["conversion"])
     rf_treat.fit(treat[feature_cols], treat["conversion"])
 
-    # Predicted conversion probabilities under each model
     df["p_ctrl"] = rf_ctrl.predict_proba(df[feature_cols])[:, 1]
     df["p_treat"] = rf_treat.predict_proba(df[feature_cols])[:, 1]
     df["uplift"] = df["p_treat"] - df["p_ctrl"]
@@ -70,7 +67,6 @@ def wilson_ci(n, k, z=1.96):
 
 
 def qini_curve(df, uplift_col="uplift", outcome="conversion", n_bins=100):
-    """Compute Qini curve data. Returns DataFrame with pct, cumulative incremental gain."""
     df_sorted = df.sort_values(uplift_col, ascending=False).reset_index(drop=True)
     total_treat = df_sorted["treatment"].sum()
     total_ctrl = len(df_sorted) - total_treat
@@ -88,7 +84,9 @@ def qini_curve(df, uplift_col="uplift", outcome="conversion", n_bins=100):
         results.append({"pct": (i + len(chunk)) / n * 100, "cum_inc": cum_inc})
 
     qdf = pd.DataFrame(results)
-    # Perfect model: all treatment conversions first
+    total_inc = qdf["cum_inc"].iloc[-1]
+    qdf["random"] = np.linspace(0, total_inc, len(qdf))
+
     sorted_treat = df_sorted[df_sorted["treatment"] == 1].sort_values(outcome, ascending=False)
     n_treat = len(sorted_treat)
     perfect = []
@@ -98,10 +96,12 @@ def qini_curve(df, uplift_col="uplift", outcome="conversion", n_bins=100):
         cum_perf += chunk[outcome].sum() if len(chunk) else 0
         perfect.append(cum_perf)
     qdf["perfect"] = perfect[: len(qdf)]
-    # Random model: linear interpolation from 0 to total incremental gain
-    total_inc = qdf["cum_inc"].iloc[-1]
-    qdf["random"] = np.linspace(0, total_inc, len(qdf))
     return qdf
+
+
+def compute_auuc(df, outcome="conversion"):
+    qdf = qini_curve(df, outcome=outcome)
+    return auc(qdf["pct"] / 100, qdf["cum_inc"]) - auc(qdf["pct"] / 100, qdf["random"])
 
 
 # ---------------------------------------------------------------------------
@@ -110,16 +110,19 @@ def qini_curve(df, uplift_col="uplift", outcome="conversion", n_bins=100):
 df_raw = load_data()
 
 # ---------------------------------------------------------------------------
-# Sidebar — outcome selector (shared across tabs)
+# Sidebar
 # ---------------------------------------------------------------------------
-st.sidebar.header("⚙️ Configuración")
-outcome = st.sidebar.selectbox("Variable objetivo", ["conversion", "visit"], format_func=lambda x: "Conversión" if x == "conversion" else "Visita")
+st.sidebar.header("Configuracion")
+outcome = st.sidebar.selectbox(
+    "Variable objetivo", ["conversion", "visit"],
+    format_func=lambda x: "Conversion" if x == "conversion" else "Visita"
+)
 
 # ---------------------------------------------------------------------------
-# Tab 1: A/B Test data preparation
+# Tab 1: A/B Test
 # ---------------------------------------------------------------------------
 def tab_ab_test():
-    st.header("📊 A/B Test")
+    st.header("A/B Test")
     kpi_cols, _ = st.columns([0.3, 0.01])
 
     ctrl = df_raw[df_raw["treatment"] == 0]
@@ -135,19 +138,17 @@ def tab_ab_test():
 
     with kpi_cols:
         r1, r2, r3, r4 = st.columns(4)
-        r1.metric("Control (No E‑Mail)", f"{rate_c:.2%}", help=f"IC 95% [{ci_c[0]:.2%}, {ci_c[1]:.2%}]")
-        r2.metric("Tratamiento (E‑Mail)", f"{rate_t:.2%}", help=f"IC 95% [{ci_t[0]:.2%}, {ci_t[1]:.2%}]")
-        r3.metric("Lift Absoluto", f"{abs_lift:+.2%}", delta_color="inverse")
-        r4.metric("Lift Relativo", f"{rel_lift:+.2f}%", delta_color="inverse")
+        r1.metric("Control (No Email)", f"{rate_c:.2%}")
+        r2.metric("Tratamiento (Email)", f"{rate_t:.2%}")
+        r3.metric("Lift Absoluto", f"{abs_lift:+.2%}")
+        r4.metric("Lift Relativo", f"{rel_lift:+.2f}%")
 
-    # Bar chart with Wilson CI
     fig = go.Figure()
     fig.add_trace(go.Bar(
         x=["Control", "Tratamiento"],
         y=[rate_c, rate_t],
         error_y=dict(
-            type="data",
-            symmetric=False,
+            type="data", symmetric=False,
             array=[[ci_t[1] - rate_t], [rate_c - ci_c[0]]],
             arrayminus=[[rate_t - ci_t[0]], [rate_c - ci_c[0]]],
             visible=True,
@@ -157,15 +158,13 @@ def tab_ab_test():
         textposition="outside",
     ))
     fig.update_layout(
-        title=f"Tasa de {'Conversión' if outcome == 'conversion' else 'Visita'} — Control vs Tratamiento",
-        yaxis=dict(tickformat=".1%"),
-        height=400,
+        title=f"Tasa de {'Conversion' if outcome == 'conversion' else 'Visita'}",
+        yaxis=dict(tickformat=".1%"), height=400,
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # Subgroup analysis
-    with st.expander("🔍 Análisis por subgrupo"):
-        sub = st.selectbox("Variable de segmentación", ["history_segment", "zip_code", "channel"])
+    with st.expander("Analisis por subgrupo"):
+        sub = st.selectbox("Variable", ["history_segment", "zip_code", "channel"])
         sub_df = df_raw.groupby(sub).apply(
             lambda g: pd.Series({
                 "n": len(g),
@@ -178,126 +177,92 @@ def tab_ab_test():
         sub_df["Lift %"] = sub_df["Lift"] / sub_df["Control"] * 100
         sub_df = sub_df.sort_values("Lift", ascending=False)
         st.dataframe(sub_df.style.format({
-            "Muestras": "{:,.0f}",
-            "Control": "{:.2%}", "Tratamiento": "{:.2%}",
-            "Lift": "{:+.4f}", "Lift %": "{:+.2f}%",
+            "Muestras": "{:,.0f}", "Control": "{:.2%}",
+            "Tratamiento": "{:.2%}", "Lift": "{:+.4f}", "Lift %": "{:+.2f}%",
         }), hide_index=True, use_container_width=True)
 
 
 # ---------------------------------------------------------------------------
-# Tab 2: Modelo de Uplift
+# Tab 2: Model
 # ---------------------------------------------------------------------------
 def tab_modelo():
-    st.header("📈 Modelo de Uplift")
+    st.header("Modelo de Uplift")
     df, _ = train_models(df_raw)
     met1, met2, met3 = st.columns(3)
-    met1.metric("AUUC", f"{compute_auuc(df):.4f}")
+    met1.metric("AUUC", f"{compute_auuc(df, outcome):.4f}")
     met2.metric("Uplift Promedio", f"{df['uplift'].mean():+.4f}")
     met3.metric("% Uplift Positivo", f"{(df['uplift'] > 0).mean():.1%}")
 
-    tab_a, tab_b = st.tabs(["Curva Qini", "Distribución Uplift"])
-
-    with tab_a:
-        qdf = qini_curve(df, outcome=outcome)
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=qdf["pct"], y=qdf["perfect"], name="Modelo Perfecto", line=dict(dash="dot", color="green")))
-        fig.add_trace(go.Scatter(x=qdf["pct"], y=qdf["random"], name="Aleatorio", line=dict(dash="dot", color="gray")))
-        fig.add_trace(go.Scatter(x=qdf["pct"], y=qdf["cum_inc"], name="T-Learner", line=dict(color="#ff7f0e", width=3)))
-        fig.update_layout(title="Curva Qini", xaxis_title="% Clientes Contactados", yaxis_title="Ganancia Incremental Acumulada", height=450)
-        st.plotly_chart(fig, use_container_width=True)
-
-    with tab_b:
-        fig = px.histogram(df, x="uplift", nbins=60, color_discrete_sequence=["#1f77b4"],
-                           labels={"uplift": "Uplift (Δ P(conversión))"})
-        fig.add_vline(x=0, line_dash="dash", line_color="red", opacity=0.6)
-        fig.update_layout(title="Distribución del Uplift", height=400)
-        st.plotly_chart(fig, use_container_width=True)
-
-    # Show top features
-    with st.expander("🔬 Importancia de variables"):
-        _, feats = train_models(df_raw)  # re-use cached
-        df_enriched = pd.get_dummies(df_raw, columns=["history_segment", "zip_code", "channel"], drop_first=True)
-        rf = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42, n_jobs=-1)
-        rf.fit(df_enriched[[c for c in df_enriched.columns if c not in ["segment","treatment","conversion","visit","spend","history_segment","zip_code","channel"]]], df_enriched["conversion"])
-        imp = pd.DataFrame({"Variable": feats, "Importancia": rf.feature_importances_}).sort_values("Importancia", ascending=False)
-        fig = px.bar(imp.head(12), x="Importancia", y="Variable", orientation="h", height=400)
-        fig.update_layout(title="Top 12 Variables — Importancia", yaxis={"categoryorder": "total ascending"})
-        st.plotly_chart(fig, use_container_width=True)
-
-
-def compute_auuc(df):
-    """Approximate area under uplift curve (Qini)."""
     qdf = qini_curve(df, outcome=outcome)
-    return auc(qdf["pct"] / 100, qdf["cum_inc"]) - auc(qdf["pct"] / 100, qdf["random"])
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=qdf["pct"], y=qdf["perfect"], name="Perfecto", line=dict(dash="dot", color="green")))
+    fig.add_trace(go.Scatter(x=qdf["pct"], y=qdf["random"], name="Aleatorio", line=dict(dash="dot", color="gray")))
+    fig.add_trace(go.Scatter(x=qdf["pct"], y=qdf["cum_inc"], name="T-Learner", line=dict(color="#ff7f0e", width=3)))
+    fig.update_layout(
+        title="Curva Qini", xaxis_title="% Clientes", yaxis_title="Ganancia Acumulada", height=450
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    fig2 = px.histogram(df, x="uplift", nbins=60, labels={"uplift": "Uplift"})
+    fig2.add_vline(x=0, line_dash="dash", line_color="red", opacity=0.6)
+    fig2.update_layout(title="Distribucion del Uplift", height=400)
+    st.plotly_chart(fig2, use_container_width=True)
 
 
 # ---------------------------------------------------------------------------
-# Tab 3: Segmentación
+# Tab 3: Segmentation
 # ---------------------------------------------------------------------------
 def tab_segmentacion():
-    st.header("🎯 Segmentación")
+    st.header("Segmentacion")
     df, _ = train_models(df_raw)
-    df["p_conv"] = (df["p_ctrl"] + df["p_treat"]) / 2  # avg conversion prob
+    df["p_conv"] = (df["p_ctrl"] + df["p_treat"]) / 2
     thr_uplift = st.slider("Umbral de Uplift", -0.05, 0.15, 0.0, 0.001, format="%+.3f")
     thr_conv = df["p_conv"].median()
 
     def quadrant(row):
         if row["uplift"] >= thr_uplift and row["p_conv"] >= thr_conv:
-            return "🟢 Seguros con Potencial"
+            return "Sure Things"
         if row["uplift"] >= thr_uplift and row["p_conv"] < thr_conv:
-            return "🔵 Persuadibles"
+            return "Persuadables"
         if row["uplift"] < thr_uplift and row["p_conv"] >= thr_conv:
-            return "🟡 Perder Recursos"
-        return "🔴 Bajo Interés"
+            return "Sleeping Dogs"
+        return "Lost Causes"
 
     df["quadrant"] = df.apply(quadrant, axis=1)
-    order = ["🟢 Seguros con Potencial", "🔵 Persuadibles", "🟡 Perder Recursos", "🔴 Bajo Interés"]
+    order = ["Sure Things", "Persuadables", "Sleeping Dogs", "Lost Causes"]
+    colors = {"Sure Things": "#2ecc71", "Persuadables": "#3498db", "Sleeping Dogs": "#f1c40f", "Lost Causes": "#e74c3c"}
 
-    # Pie/bar chart
     counts = df["quadrant"].value_counts().reindex(order, fill_value=0)
-    fig = px.bar(
-        x=counts.index, y=counts.values,
-        color=counts.index,
-        color_discrete_map={
-            "🟢 Seguros con Potencial": "#2ecc71",
-            "🔵 Persuadibles": "#3498db",
-            "🟡 Perder Recursos": "#f1c40f",
-            "🔴 Bajo Interés": "#e74c3c",
-        },
-        labels={"x": "Cuadrante", "y": "Clientes"},
-        text=counts.values,
-        height=400,
-    )
-    fig.update_layout(title="Distribución de Cuadrantes", showlegend=False)
+    fig = px.bar(x=counts.index, y=counts.values, color=counts.index,
+                 color_discrete_map=colors, labels={"x": "Cuadrante", "y": "Clientes"},
+                 text=counts.values, height=400)
+    fig.update_layout(title="Distribucion de Cuadrantes", showlegend=False)
     st.plotly_chart(fig, use_container_width=True)
 
-    # Table
     tbl_data = []
     for q in order:
         sub = df[df["quadrant"] == q]
         if len(sub) == 0:
             tbl_data.append([q, 0, 0, None, None, None])
             continue
-        top_ch = sub["channel"].mode().iloc[0] if len(sub) else ""
-        tbl_data.append([
-            q, len(sub), len(sub) / len(df) * 100,
-            sub["recency"].mean(), sub["history"].mean(), top_ch,
-        ])
-    tbl = pd.DataFrame(tbl_data, columns=["Cuadrante", "Clientes", "%", "Recency (media)", "History (media)", "Canal principal"])
+        top_ch = sub["channel"].mode().iloc[0]
+        tbl_data.append([q, len(sub), len(sub) / len(df) * 100,
+                         sub["recency"].mean(), sub["history"].mean(), top_ch])
+    tbl = pd.DataFrame(tbl_data, columns=["Cuadrante", "Clientes", "%", "Recency", "History", "Canal"])
     st.dataframe(tbl.style.format({
         "Clientes": "{:,.0f}", "%": "{:.1f}%",
-        "Recency (media)": "{:.1f}", "History (media)": "${:,.0f}",
+        "Recency": "{:.1f}", "History": "${:,.0f}",
     }), hide_index=True, use_container_width=True)
 
 
 # ---------------------------------------------------------------------------
-# Tab 4: Simulador de Negocio
+# Tab 4: Business Simulator
 # ---------------------------------------------------------------------------
 def tab_simulador():
-    st.header("💰 Simulador de Negocio")
+    st.header("Simulador de Negocio")
     col1, col2, col3 = st.columns(3)
     cost_email = col1.number_input("Coste por email ($)", 0.0, 1.0, 0.05, 0.01)
-    rev_conv = col2.number_input("Ingreso por conversión ($)", 0.0, 200.0, 50.0, 1.0)
+    rev_conv = col2.number_input("Ingreso por conversion ($)", 0.0, 200.0, 50.0, 1.0)
 
     df, _ = train_models(df_raw)
     df = df.sort_values("uplift", ascending=False).reset_index(drop=True)
@@ -306,8 +271,6 @@ def tab_simulador():
     n_target = max(1, int(len(df) * pct))
     targeted = df.iloc[:n_target]
 
-    n_t = targeted["treatment"].sum()
-    n_c = n_target - n_t
     base_conv = targeted.loc[targeted["treatment"] == 0, "p_ctrl"].sum()
     uplift_conv = targeted.loc[targeted["treatment"] == 1, "uplift"].sum()
     expected_conv = base_conv + uplift_conv
@@ -318,27 +281,24 @@ def tab_simulador():
     profit = revenue - cost
 
     r1, r2, r3, r4, r5 = st.columns(5)
-    r1.metric("📧 Emails enviados", f"{emails:,.0f}")
-    r2.metric("🔄 Conversiones esperadas", f"{expected_conv:,.1f}")
-    r3.metric("💰 Coste", f"${cost:,.2f}")
-    r4.metric("📈 Ingreso", f"${revenue:,.2f}")
-    r5.metric("🏆 Ganancia", f"${profit:,.2f}", delta=f"${profit:+,.2f}")
+    r1.metric("Emails enviados", f"{emails:,.0f}")
+    r2.metric("Conversiones esperadas", f"{expected_conv:,.1f}")
+    r3.metric("Coste", f"${cost:,.2f}")
+    r4.metric("Ingreso", f"${revenue:,.2f}")
+    r5.metric("Ganancia", f"${profit:,.2f}")
 
-    # Waterfall
     fig = go.Figure(go.Waterfall(
         name="Flujo", orientation="v",
         measure=["relative", "relative", "total"],
-        x=["Ingreso esperado", "Coste emails", "Ganancia neta"],
+        x=["Ingreso", "Coste emails", "Ganancia neta"],
         y=[revenue, -cost, profit],
-        connector={"line": {"color": "rgb(63, 63, 63)"}},
         decreasing={"marker": {"color": "#e74c3c"}},
         increasing={"marker": {"color": "#2ecc71"}},
         totals={"marker": {"color": "#3498db"}},
     ))
-    fig.update_layout(title="Diagrama Waterfall: Del Ingreso a la Ganancia", height=400, waterfallgap=0.3)
+    fig.update_layout(title="Waterfall: Ingreso a Ganancia", height=400, waterfallgap=0.3)
     st.plotly_chart(fig, use_container_width=True)
 
-    # Profit curve
     pcts = np.linspace(0.01, 1.0, 50)
     curve = []
     for p in pcts:
@@ -346,24 +306,21 @@ def tab_simulador():
         base = sub.loc[sub["treatment"] == 0, "p_ctrl"].sum()
         up = sub.loc[sub["treatment"] == 1, "uplift"].sum()
         exp = base + up
-        curve.append({
-            "pct": p * 100,
-            "profit": exp * rev_conv - len(sub) * cost_email,
-            "customers": len(sub),
-        })
+        curve.append({"pct": p * 100, "profit": exp * rev_conv - len(sub) * cost_email,
+                      "customers": len(sub)})
     cdf = pd.DataFrame(curve)
     fig2 = px.line(cdf, x="customers", y="profit", markers=True,
-                   labels={"customers": "Clientes contactados", "profit": "Ganancia ($)"},
-                   title="Curva Clientes vs Ganancia")
+                   labels={"customers": "Clientes", "profit": "Ganancia ($)"},
+                   title="Clientes vs Ganancia")
     fig2.add_hline(y=0, line_dash="dot", line_color="gray", opacity=0.5)
     fig2.update_layout(height=400)
     st.plotly_chart(fig2, use_container_width=True)
 
 
 # ---------------------------------------------------------------------------
-# Tab navigation
+# Tabs
 # ---------------------------------------------------------------------------
-tabs = st.tabs(["📊 A/B Test", "📈 Modelo de Uplift", "🎯 Segmentación", "💰 Simulador de Negocio"])
+tabs = st.tabs(["A/B Test", "Modelo de Uplift", "Segmentacion", "Simulador"])
 
 with tabs[0]:
     tab_ab_test()
