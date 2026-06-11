@@ -1,6 +1,32 @@
 # Uplift Modeling: Email Marketing Campaign
 
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://uplift-modeling-d8kksx5aquge9anu8rbcac.streamlit.app)
+[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)]()
+
 End-to-end uplift modeling project for targeted email marketing. Uses A/B testing and causal inference to identify which customers should receive promotional emails -- and which should not.
+
+## Quick Start
+
+```bash
+git clone https://github.com/tscobarr/uplift-modeling.git
+cd uplift-modeling
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+streamlit run dashboard/app.py
+```
+
+## Results
+
+| Metric | Value |
+|--------|-------|
+| A/B test significance | p < 0.001 |
+| Best model | T-Learner (AUUC 35.81 vs 32.15 baseline) |
+| Persuadables | 35.9% of customers |
+| Sure Things | 28.4% -- wasted cost |
+| Sleeping Dogs | 21.6% -- negative reaction |
+| Lost Causes | 14.1% -- never convert |
+| Email reduction | 64% targeting only Persuadables |
 
 ## Dataset
 
@@ -26,23 +52,6 @@ Features: recency, historical spend, purchase categories, location, channel, cus
 └── PLAN.md                         Full project plan
 ```
 
-## Key Findings
-
-### A/B Test
-- Email produces statistically significant lift (p < 0.001) on both conversion and visit outcomes
-- Effect varies by customer segment: higher recency and purchase history segments respond more
-
-### Uplift Modeling
-- **T-Learner** (two Random Forest models) achieved best AUUC: 35.81 vs 32.15 random baseline
-- Customer classification into 4 quadrants:
-  - **Persuadables** (35.9%): respond positively to email -- target these
-  - **Sure Things** (28.4%): convert regardless -- wasted email cost
-  - **Sleeping Dogs** (21.6%): react negatively -- do not target
-  - **Lost Causes** (14.1%): never convert
-
-### Business Impact
-Targeting only Persuadables reduces email volume by 64% while capturing most conversions. The Streamlit dashboard includes a business simulator (cost per email, revenue per conversion) to quantify expected profit.
-
 ## Tech Stack
 
 Python, pandas, numpy, scipy, scikit-learn, statsmodels, matplotlib, seaborn, plotly, Streamlit.
@@ -51,13 +60,13 @@ Uplift methods: S-Learner, T-Learner, X-Learner implemented with scikit-learn. Q
 
 ## Dashboard
 
-```
-cd uplift-modeling
-source .venv/bin/activate
-streamlit run dashboard/app.py
-```
+[Live demo](https://uplift-modeling-d8kksx5aquge9anu8rbcac.streamlit.app) — four tabs: A/B Test results, Uplift model metrics, Customer segmentation (4 quadrants), Business simulator.
 
-Four tabs: A/B Test results, Uplift model metrics, Customer segmentation (4 quadrants), Business simulator.
+## Notebooks
+
+- `01_eda.ipynb` — Exploratory data analysis
+- `02_ab_testing.ipynb` — A/B testing: lift, statistical significance, power analysis
+- `03_uplift_modeling.ipynb` — Uplift models: S-Learner, T-Learner, X-Learner, Qini curves
 
 ## References
 
