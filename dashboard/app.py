@@ -28,8 +28,10 @@ def load_data():
 @st.cache_data(show_spinner="Entrenando modelo T-Learner...")
 def train_models(_df):
     """Train T-Learner: two RandomForest models (control, treatment)."""
+    channel_saved = _df["channel"].copy()
     cat_cols = ["history_segment", "zip_code", "channel"]
     df = pd.get_dummies(_df, columns=cat_cols, drop_first=True)
+    df["channel"] = channel_saved.values
 
     treat = df[df["treatment"] == 1]
     ctrl = df[df["treatment"] == 0]
