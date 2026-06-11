@@ -1,0 +1,7 @@
+[theme]
+primaryColor = "#1f77b4"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f5f5f5"
+
+[browser]
+gatherUsageStats = false
